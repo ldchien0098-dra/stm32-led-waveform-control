@@ -1,147 +1,130 @@
 # 3-Channel LED Waveform Control on STM32
 
-**Bài test thực hành lập trình nhúng STM32 — Round 2**
+Bài test thực hành lập trình nhúng STM32 — Round 2
 
 ---
 
-## Mô tả bài toán
+## Giới thiệu
 
-Viết firmware điều khiển 3 LED (A, B, C) tạo hiệu ứng ánh sáng dạng sóng sin:
-- Độ sáng mỗi LED thay đổi mượt mà, liên tục
-- 3 LED lệch pha đều nhau (120°)
-- Hệ thống chạy ổn định, không giật, không chớp bất thường
+Project điều khiển 3 LED tạo hiệu ứng sóng sin lệch pha đều nhau trên vi điều khiển STM32F103C8Tx.  
+Em thực hiện bài test này nhằm đáp ứng các yêu cầu kỹ thuật về Timer PWM, Interrupt và tối ưu ISR.
 
 ---
 
-## Hardware
+## Phần cứng sử dụng
 
-| Pin  | Chức năng         |
-|------|-------------------|
-| PA8  | TIM1_CH1 — LED A  |
-| PA9  | TIM1_CH2 — LED B  |
-| PA10 | TIM1_CH3 — LED C  |
-| PA0  | Button — bật/tắt hiệu ứng (EXTI0, falling edge) |
+| Pin  | Chức năng |
+|------|-----------|
+| PA8  | TIM1_CH1 — LED A |
+| PA9  | TIM1_CH2 — LED B |
+| PA10 | TIM1_CH3 — LED C |
+| PA0  | Nút nhấn — bật/tắt hiệu ứng |
 
-**MCU:** STM32F103C8Tx (Blue Pill) — 72 MHz (HSE 8MHz × PLL×9)
+- **Board:** STM32F103C8Tx (Blue Pill)
+- **Clock:** 72 MHz (HSE 8MHz × PLL×9)
+- **IDE:** STM32CubeIDE + STM32CubeMX
 
 ---
 
 ## Cấu hình Timer
 
-| Thông số | Giá trị | Ghi chú |
-|----------|---------|---------|
-| Timer | TIM1 | 1 timer duy nhất |
-| Mode | Center-Aligned Mode 1 | Đúng yêu cầu bài test |
-| Prescaler | 71 | Timer clock = 1 MHz |
-| ARR (Period) | 999 | PWM_MAX = 999 |
-| Update Interrupt | mỗi 2ms | Nằm trong khoảng 1–5ms |
-| Kênh PWM | CH1 / CH2 / CH3 | Cùng 1 timer |
+Em sử dụng **duy nhất 1 Timer (TIM1)** để vừa xuất 3 kênh PWM vừa tạo ngắt cập nhật.
+
+| Thông số | Giá trị |
+|----------|---------|
+| Timer | TIM1 |
+| Chế độ | Center-Aligned Mode 1 |
+| Prescaler | 71 |
+| Period (ARR) | 999 |
+| Chu kỳ ngắt | ~2ms (nằm trong khoảng 1–5ms yêu cầu) |
+| Kênh PWM | CH1, CH2, CH3 |
 
 ---
 
-## Sine Lookup Table
+## Thuật toán điều khiển độ sáng
+
+Em dùng **Lookup Table (LUT)** gồm 120 giá trị mô phỏng sóng sin, tính sẵn và lưu trong Flash:
 
 ```c
-#define TABLE_SIZE  120U
-#define PHASE_STEP  40U    // lech pha 120 do (= TABLE_SIZE / 3)
+#define TABLE_SIZE  120   // 120 phan tu (> 100 theo yeu cau)
+#define PHASE_STEP   40   // lech pha 120 do giua moi LED
 
-// Scale [124..875] tren ARR=999
-// Tinh offline: round(499.5 * sin(2*PI*i/120) + 499.5)
-// Luu trong Flash (const) — khong dung float o runtime
-const uint16_t sine_table[TABLE_SIZE] = { ... };
+// 3 LED bat dau o vi tri khac nhau trong bang
+idx_A = 0;    // LED A
+idx_B = 40;   // LED B lech 120 do
+idx_C = 80;   // LED C lech 240 do
 ```
 
-- **120 phần tử** (≥ 100 theo yêu cầu)
-- **Lưu trong Flash** — không tốn RAM
-- **Không dùng `float` hay `sin()`** ở runtime
-- 3 index lệch pha đều: `idx_A=0`, `idx_B=40`, `idx_C=80`
+Mỗi lần ngắt xảy ra, 3 chỉ số được tăng lên đồng thời → 3 LED luôn giữ khoảng cách đều nhau.
 
 ---
 
-## Tối ưu ISR — Những gì đã cải thiện so với Baseline
+## Tối ưu ISR
 
-### ❌ Baseline (chưa tối ưu)
+Đây là phần em tập trung cải thiện so với code baseline được cung cấp:
+
+**Baseline (chưa tối ưu):**
 ```c
-// Dung % trong ISR -> ton CPU
+// Dung % -> co phep chia, ton CPU trong ISR
 idx_A = (idx_A + 1) % TABLE_SIZE;
 
 // Dung HAL macro -> co overhead
 __HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_1, sine_table[idx_A]);
 ```
 
-### ✅ Code đã tối ưu
+**Code em đã cải thiện:**
 ```c
-// Truy cap truc tiep thanh ghi -> khong qua HAL, nhanh hon
+// Truy cap truc tiep thanh ghi -> nhanh hon, khong qua HAL
 TIM1->CCR1 = sine_table[idx_A];
-TIM1->CCR2 = sine_table[idx_B];
-TIM1->CCR3 = sine_table[idx_C];
 
-// Compare + subtract -> thay the %, khong co phep chia
+// Thay % bang compare+subtract -> khong co phep chia
 idx_A += step;
 if (idx_A >= TABLE_SIZE) idx_A -= TABLE_SIZE;
 ```
 
-### Bảng so sánh đầy đủ
-
-| Vấn đề Baseline | Giải pháp đã áp dụng |
-|-----------------|----------------------|
-| Dùng `%` trong ISR | `if/subtract` — không dùng phép chia |
-| `__HAL_TIM_SET_COMPARE()` | `TIM1->CCRx` — truy cập trực tiếp thanh ghi |
-| Không có speed control | `volatile uint8_t step` — điều chỉnh tốc độ hiệu ứng |
-| ISR chưa thoát sớm | `if (!run) return;` — early return trước khi chạm CCR |
-| Không có nút nhấn | PA0 EXTI0 toggle `run`, debounce 50ms |
-
 ---
 
-## Ràng buộc hiệu năng — Đã đáp ứng đầy đủ
+## Các yêu cầu kỹ thuật đã đáp ứng
 
-| Yêu cầu | Trạng thái |
-|---------|------------|
-| Không dùng `float` / `double` trong ISR | ✅ |
-| Không gọi `sin()` ở runtime | ✅ |
+| Yêu cầu | Kết quả |
+|---------|---------|
+| Chỉ dùng 1 Timer cho cả PWM lẫn Interrupt | ✅ |
+| PWM Center-Aligned | ✅ |
+| LUT tối thiểu 100 phần tử | ✅ 120 phần tử |
+| 3 LED lệch pha đều nhau | ✅ 120° mỗi LED |
+| Cập nhật PWM trong ISR, chu kỳ 1–5ms | ✅ ~2ms |
+| Không dùng `float` hay `sin()` ở runtime | ✅ |
 | Không dùng `HAL_Delay()` hay blocking | ✅ |
-| Không out-of-bounds trên LUT | ✅ |
-| Biến ISR khai báo `volatile` | ✅ |
-| Không dùng bộ nhớ động | ✅ |
-| ISR ngắn gọn, tối ưu | ✅ ~200ns @ 72MHz |
+| Không dùng `%` trong ISR | ✅ |
+| Biến dùng trong ISR khai báo `volatile` | ✅ |
+| ISR ngắn gọn, không out-of-bounds | ✅ |
 
 ---
 
-## Yêu cầu nâng cao đã thực hiện
+## Tính năng nâng cao đã thực hiện
 
-| Tính năng | Mô tả |
-|-----------|-------|
-| Speed control | `volatile uint8_t step` — tăng `step` để tăng tốc hiệu ứng, không làm mất đồng đều pha |
-| Button toggle | PA0 → EXTI0 → toggle `run`, debounce 50ms bằng HAL tick |
+- **Speed control:** Biến `step` cho phép thay đổi tốc độ hiệu ứng mà không làm mất đồng đều pha giữa 3 LED
+- **Nút nhấn:** PA0 toggle bật/tắt hiệu ứng, có debounce 50ms
 
 ---
 
-## Cấu trúc Project
+## Cấu trúc thư mục
 
 ```
 Core/
-  Src/
-    main.c          — Toàn bộ logic: init, ISR, callback
-  Inc/
-    main.h
-Drivers/            — STM32 HAL Drivers (generated)
-stm32_led_waveform_control.ioc  — CubeMX config
-STM32F103C8TX_FLASH.ld          — Linker script
+  Src/main.c       — Code chính: khởi tạo, ISR, callback nút nhấn
+  Inc/main.h
+Drivers/           — HAL Library (do CubeMX tạo)
+*.ioc              — File cấu hình CubeMX
+*.ld               — Linker script
 README.md
 ```
 
 ---
 
-## Build & Flash
+## Cách build project
 
-1. Mở bằng **STM32CubeIDE**
-2. **Build Project** (Ctrl+B) — mục tiêu: `0 errors`
-3. Flash qua ST-Link hoặc USB bootloader
-
----
-
-## Môi trường phát triển
-
-- STM32CubeMX + STM32CubeIDE
-- STM32 HAL Library
-- Target: STM32F103C8Tx — 72 MHz
+1. Mở **STM32CubeIDE**
+2. **File → Open Projects from File System** → chọn thư mục này
+3. Bấm **Build** (Ctrl+B)
+4. Kết quả mong đợi: `Build Finished. 0 errors, 0 warnings`
