@@ -56,9 +56,4 @@ README.md
 
 ---
 
-## Cách build project
 
-1. Mở **STM32CubeIDE**
-2. **File → Open Projects from File System** → chọn thư mục này
-3. Bấm **Build** (Ctrl+B)
-4. Kết quả mong đợi: `Build Finished. 0 errors, 0 warnings`
